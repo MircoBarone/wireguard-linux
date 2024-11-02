@@ -310,21 +310,40 @@ void wg_packet_encrypt_worker(struct work_struct *work)
 
 static void wg_packet_create_data(struct wg_peer *peer, struct sk_buff *first)
 {
-	struct wg_device *wg = peer->device;
-	int ret = -EINVAL;
-
+	struct noise_keypair *keypair;
+	enum packet_state state;
+	
+	struct sk_buff  *skb, *next;
 	rcu_read_lock_bh();
 	if (unlikely(READ_ONCE(peer->is_dead)))
 		goto err;
+    keypair = PACKET_CB(first)->keypair;
+    skb_list_walk_safe(first, skb, next) {
+		if (likely(encrypt_packet(skb,keypair))) {
+            wg_reset_packet(skb, true);
+			state= PACKET_STATE_CRYPTED;
+			                                        } 
+			else {
+				state = PACKET_STATE_DEAD;
+				break;
+			}
+		}
+		
 
-	ret = wg_queue_enqueue_per_device_and_peer(&wg->encrypt_queue, &peer->tx_queue, first,
-						   wg->packet_crypt_wq);
-	if (unlikely(ret == -EPIPE))
-		wg_queue_enqueue_per_peer_tx(first, PACKET_STATE_DEAD);
+		if (likely(state == PACKET_STATE_CRYPTED))
+			wg_packet_create_data_done(peer, first);
+		else
+			kfree_skb_list(first);
+
+		wg_noise_keypair_put(keypair, false);
+		wg_peer_put(peer);
+		if (need_resched())
+			cond_resched();
+
+    rcu_read_unlock_bh();
+	return;
 err:
 	rcu_read_unlock_bh();
-	if (likely(!ret || ret == -EPIPE))
-		return;
 	wg_noise_keypair_put(PACKET_CB(first)->keypair, false);
 	wg_peer_put(peer);
 	kfree_skb_list(first);
