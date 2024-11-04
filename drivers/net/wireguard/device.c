@@ -305,6 +305,35 @@ static void wg_setup(struct net_device *dev)
 	wg->dev = dev;
 }
 
+static ssize_t inline_en_show(struct device *dev, struct device_attribute *attr, char *buf) {
+    struct net_device *ndev = to_net_dev(dev);
+    struct wg_device *wg = netdev_priv(ndev);
+
+    return sysfs_emit(buf, "%d\n", wg->inline_en);
+}
+
+static ssize_t inline_en_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len) {
+    struct net_device *ndev = to_net_dev(dev);
+    struct wg_device *wg = netdev_priv(ndev);
+    int new_value;
+    int err;
+
+    err = kstrtoint(buf, 10, &new_value);
+    if (err)
+        return err;
+	
+	// Ensure the value is either 0 or 1
+    if (new_value != 0 && new_value != 1)
+        return -EINVAL; // Invalid argument error
+
+    wg->inline_en = new_value;
+
+    return len;
+}
+
+static DEVICE_ATTR_RW(inline_en);
+
+
 static int wg_newlink(struct net *src_net, struct net_device *dev,
 		      struct nlattr *tb[], struct nlattr *data[],
 		      struct netlink_ext_ack *extack)
@@ -373,6 +402,16 @@ static int wg_newlink(struct net *src_net, struct net_device *dev,
 	 * register_netdevice doesn't call it for us if it fails.
 	 */
 	dev->priv_destructor = wg_destruct;
+
+	// Inline is enabled by default
+    wg->inline_en = 1;
+
+    // Create the sysfs entry for inline_en
+    ret = sysfs_create_file(&dev->dev.kobj, &dev_attr_inline_en.attr);
+    if (ret) {
+        pr_err("%s: Error creating sysfs entries for inline_en\n", dev->name);
+        goto err_uninit_ratelimiter;
+    }
 
 	pr_debug("%s: Interface created\n", dev->name);
 	return ret;

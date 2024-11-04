@@ -54,6 +54,7 @@ struct wg_device {
 	unsigned int num_peers, device_update_gen;
 	u32 fwmark;
 	u16 incoming_port;
+    int inline_en;
 };
 
 int wg_device_init(void);
