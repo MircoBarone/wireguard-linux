@@ -333,61 +333,16 @@ static ssize_t inline_en_store(struct device *dev, struct device_attribute *attr
 
 static DEVICE_ATTR_RW(inline_en);
 
-static ssize_t encrypt_cpumask_show(struct device *dev,
-                                  struct device_attribute *attr, char *buf)
+static ssize_t cpumask_show(struct device *dev, struct device_attribute *attr, char *buf, bool encrypt)
 {
     struct net_device *ndev = to_net_dev(dev);
     struct wg_device *wg = netdev_priv(ndev);
+    cpumask_t *mask = encrypt ? &wg->encrypt_cpumask : &wg->decrypt_cpumask;
 
-    return sysfs_emit(buf, "%*pb\n", cpumask_pr_args(&wg->encrypt_cpumask));
+    return sysfs_emit(buf, "%*pb\n", cpumask_pr_args(mask));
 }
 
-static ssize_t encrypt_cpumask_store(struct device *dev,
-                                   struct device_attribute *attr,
-                                   const char *buf, size_t len)
-{
-    struct net_device *ndev = to_net_dev(dev);
-    struct wg_device *wg = netdev_priv(ndev);
-    cpumask_var_t new_value;
-    int err;
-
-    if (!zalloc_cpumask_var(&new_value, GFP_KERNEL))
-        return -ENOMEM;
-
-    err = cpumask_parse(buf, new_value);
-    if (err)
-	{
-        goto free_cpumask;
-	}
-	if (cpumask_empty(new_value)) {
-    	err = -EINVAL; // Invalid argument error
-    	goto free_cpumask;
-    }
-
-    cpumask_copy(&wg->encrypt_cpumask, new_value);
-
-    return len;
-
-free_cpumask:
-    free_cpumask_var(new_value);
-    return err;
-}
-
-static DEVICE_ATTR_RW(encrypt_cpumask);
-
-
-static ssize_t decrypt_cpumask_show(struct device *dev,
-                                  struct device_attribute *attr, char *buf)
-{
-    struct net_device *ndev = to_net_dev(dev);
-    struct wg_device *wg = netdev_priv(ndev);
-
-    return sysfs_emit(buf, "%*pb\n", cpumask_pr_args(&wg->decrypt_cpumask));
-}
-
-static ssize_t decrypt_cpumask_store(struct device *dev,
-                                   struct device_attribute *attr,
-                                   const char *buf, size_t len)
+static ssize_t cpumask_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len, bool encrypt)
 {
     struct net_device *ndev = to_net_dev(dev);
     struct wg_device *wg = netdev_priv(ndev);
@@ -398,24 +353,30 @@ static ssize_t decrypt_cpumask_store(struct device *dev,
         return -ENOMEM;
 
     err = cpumask_parse(buf, new_value);
-    if (err)
-    {   goto free_cpumask;
-	}
-    if (cpumask_empty(new_value)) {
-    	err = -EINVAL; // Invalid argument error
-    	goto free_cpumask;
+    if (err || cpumask_empty(new_value)) {
+        free_cpumask_var(new_value);
+        return err ? err : -EINVAL;
     }
 
-    cpumask_copy(&wg->decrypt_cpumask, new_value);
+    cpumask_copy(encrypt ? &wg->encrypt_cpumask : &wg->decrypt_cpumask, new_value);
+    free_cpumask_var(new_value);
 
     return len;
-
-free_cpumask:
-    free_cpumask_var(new_value);
-    return err;
 }
 
-static DEVICE_ATTR_RW(decrypt_cpumask);
+#define DEFINE_CPUMASK_ATTR(name, encrypt) \
+static ssize_t name##_show(struct device *dev, struct device_attribute *attr, char *buf) \
+{ \
+    return cpumask_show(dev, attr, buf, encrypt); \
+} \
+static ssize_t name##_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len) \
+{ \
+    return cpumask_store(dev, attr, buf, len, encrypt); \
+} \
+static DEVICE_ATTR_RW(name);
+
+DEFINE_CPUMASK_ATTR(encrypt_cpumask, true)
+DEFINE_CPUMASK_ATTR(decrypt_cpumask, false)
 
 
 
