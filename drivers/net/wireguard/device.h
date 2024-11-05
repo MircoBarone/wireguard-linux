@@ -55,6 +55,8 @@ struct wg_device {
 	u32 fwmark;
 	u16 incoming_port;
     int inline_en;
+	struct cpumask encrypt_cpumask;
+	struct cpumask decrypt_cpumask;
 };
 
 int wg_device_init(void);

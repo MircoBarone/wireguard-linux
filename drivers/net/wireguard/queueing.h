@@ -154,9 +154,10 @@ static inline void wg_prev_queue_drop_peeked(struct prev_queue *queue)
 	queue->peeked = NULL;
 }
 
-static inline int wg_queue_enqueue_per_device_and_peer(
-	struct crypt_queue *device_queue, struct prev_queue *peer_queue,
-	struct sk_buff *skb, struct workqueue_struct *wq)
+static inline int wg_queue_enqueue_per_device_and_peer_tx(
+    struct wg_device *wg, struct crypt_queue *device_queue,
+    struct prev_queue *peer_queue, struct sk_buff *skb,
+    struct workqueue_struct *wq)
 {
 	int cpu;
 
@@ -170,10 +171,42 @@ static inline int wg_queue_enqueue_per_device_and_peer(
 	/* Then we queue it up in the device queue, which consumes the
 	 * packet as soon as it can.
 	 */
-	cpu = wg_cpumask_next_online(&device_queue->last_cpu);
-	if (unlikely(ptr_ring_produce_bh(&device_queue->ring, skb)))
-		return -EPIPE;
-	queue_work_on(cpu, wq, &per_cpu_ptr(device_queue->worker, cpu)->work);
+	cpu = cpumask_next_and(device_queue->last_cpu, cpu_online_mask,
+                           &wg->encrypt_cpumask);
+    if (cpu >= nr_cpu_ids)
+        cpu = cpumask_first_and(cpu_online_mask, &wg->encrypt_cpumask);
+    device_queue->last_cpu = cpu;
+    if (unlikely(ptr_ring_produce_bh(&device_queue->ring, skb)))
+        return -EPIPE;
+    queue_work_on(cpu, wq, &per_cpu_ptr(device_queue->worker, cpu)->work);
+	return 0;
+}
+
+static inline int wg_queue_enqueue_per_device_and_peer_rx(
+    struct wg_device *wg, struct crypt_queue *device_queue,
+    struct prev_queue *peer_queue, struct sk_buff *skb,
+    struct workqueue_struct *wq)
+{
+	int cpu;
+
+	atomic_set_release(&PACKET_CB(skb)->state, PACKET_STATE_UNCRYPTED);
+	/* We first queue this up for the peer ingestion, but the consumer
+	 * will wait for the state to change to CRYPTED or DEAD before.
+	 */
+	if (unlikely(!wg_prev_queue_enqueue(peer_queue, skb)))
+		return -ENOSPC;
+
+	/* Then we queue it up in the device queue, which consumes the
+	 * packet as soon as it can.
+	 */
+	cpu = cpumask_next_and(device_queue->last_cpu, cpu_online_mask,
+                           &wg->decrypt_cpumask);
+    if (cpu >= nr_cpu_ids)
+        cpu = cpumask_first_and(cpu_online_mask, &wg->decrypt_cpumask);
+    device_queue->last_cpu = cpu;
+    if (unlikely(ptr_ring_produce_bh(&device_queue->ring, skb)))
+        return -EPIPE;
+    queue_work_on(cpu, wq, &per_cpu_ptr(device_queue->worker, cpu)->work);
 	return 0;
 }
 

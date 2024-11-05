@@ -333,6 +333,92 @@ static ssize_t inline_en_store(struct device *dev, struct device_attribute *attr
 
 static DEVICE_ATTR_RW(inline_en);
 
+static ssize_t encrypt_cpumask_show(struct device *dev,
+                                  struct device_attribute *attr, char *buf)
+{
+    struct net_device *ndev = to_net_dev(dev);
+    struct wg_device *wg = netdev_priv(ndev);
+
+    return sysfs_emit(buf, "%*pb\n", cpumask_pr_args(&wg->encrypt_cpumask));
+}
+
+static ssize_t encrypt_cpumask_store(struct device *dev,
+                                   struct device_attribute *attr,
+                                   const char *buf, size_t len)
+{
+    struct net_device *ndev = to_net_dev(dev);
+    struct wg_device *wg = netdev_priv(ndev);
+    cpumask_var_t new_value;
+    int err;
+
+    if (!zalloc_cpumask_var(&new_value, GFP_KERNEL))
+        return -ENOMEM;
+
+    err = cpumask_parse(buf, new_value);
+    if (err)
+	{
+        goto free_cpumask;
+	}
+	if (cpumask_empty(new_value)) {
+    	err = -EINVAL; // Invalid argument error
+    	goto free_cpumask;
+    }
+
+    cpumask_copy(&wg->encrypt_cpumask, new_value);
+
+    return len;
+
+free_cpumask:
+    free_cpumask_var(new_value);
+    return err;
+}
+
+static DEVICE_ATTR_RW(encrypt_cpumask);
+
+
+static ssize_t decrypt_cpumask_show(struct device *dev,
+                                  struct device_attribute *attr, char *buf)
+{
+    struct net_device *ndev = to_net_dev(dev);
+    struct wg_device *wg = netdev_priv(ndev);
+
+    return sysfs_emit(buf, "%*pb\n", cpumask_pr_args(&wg->decrypt_cpumask));
+}
+
+static ssize_t decrypt_cpumask_store(struct device *dev,
+                                   struct device_attribute *attr,
+                                   const char *buf, size_t len)
+{
+    struct net_device *ndev = to_net_dev(dev);
+    struct wg_device *wg = netdev_priv(ndev);
+    cpumask_var_t new_value;
+    int err;
+
+    if (!zalloc_cpumask_var(&new_value, GFP_KERNEL))
+        return -ENOMEM;
+
+    err = cpumask_parse(buf, new_value);
+    if (err)
+    {   goto free_cpumask;
+	}
+    if (cpumask_empty(new_value)) {
+    	err = -EINVAL; // Invalid argument error
+    	goto free_cpumask;
+    }
+
+    cpumask_copy(&wg->decrypt_cpumask, new_value);
+
+    return len;
+
+free_cpumask:
+    free_cpumask_var(new_value);
+    return err;
+}
+
+static DEVICE_ATTR_RW(decrypt_cpumask);
+
+
+
 
 static int wg_newlink(struct net *src_net, struct net_device *dev,
 		      struct nlattr *tb[], struct nlattr *data[],
@@ -411,6 +497,22 @@ static int wg_newlink(struct net *src_net, struct net_device *dev,
     if (ret) {
         pr_err("%s: Error creating sysfs entries for inline_en\n", dev->name);
         goto err_uninit_ratelimiter;
+    }
+
+	cpumask_copy(&wg->encrypt_cpumask, cpu_possible_mask);
+
+    ret = sysfs_create_file(&dev->dev.kobj, &dev_attr_encrypt_cpumask.attr);
+    if (ret) {
+    pr_err("%s: Error creating sysfs entries\n", dev->name);
+    goto err_uninit_ratelimiter;
+    }
+
+	cpumask_copy(&wg->decrypt_cpumask, cpu_possible_mask);
+
+    ret = sysfs_create_file(&dev->dev.kobj, &dev_attr_decrypt_cpumask.attr);
+    if (ret) {
+    pr_err("%s: Error creating sysfs entries\n", dev->name);
+    goto err_uninit_ratelimiter;
     }
 
 	pr_debug("%s: Interface created\n", dev->name);

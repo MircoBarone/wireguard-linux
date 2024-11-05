@@ -358,7 +358,7 @@ static void wg_packet_create_data(struct wg_peer *peer, struct sk_buff *first)
 	if (unlikely(READ_ONCE(peer->is_dead)))
 		goto err;
 
-	ret = wg_queue_enqueue_per_device_and_peer(&wg->encrypt_queue, &peer->tx_queue, first,
+	ret = wg_queue_enqueue_per_device_and_peer_tx(wg,&wg->encrypt_queue, &peer->tx_queue, first,
 						   wg->packet_crypt_wq);
 	if (unlikely(ret == -EPIPE))
 		wg_queue_enqueue_per_peer_tx(first, PACKET_STATE_DEAD);
@@ -432,7 +432,7 @@ void wg_packet_send_staged_packets(struct wg_peer *peer)
 	struct wg_device *wg = peer->device;
 	if(wg->inline_en==0)
 	{wg_packet_create_data(peer, packets.next);}
-    else if(wg->inline_en==1)
+    else 
 	{wg_packet_create_data_inline(peer, packets.next);}
 	return;
 

@@ -558,7 +558,7 @@ static void wg_packet_consume_data(struct wg_device *wg, struct sk_buff *skb)
 	if (unlikely(READ_ONCE(peer->is_dead)))
 		goto err;
 
-	ret = wg_queue_enqueue_per_device_and_peer(&wg->decrypt_queue, &peer->rx_queue, skb,
+	ret = wg_queue_enqueue_per_device_and_peer_rx(wg,&wg->decrypt_queue, &peer->rx_queue, skb,
 						   wg->packet_crypt_wq);
 	if (unlikely(ret == -EPIPE))
 		wg_queue_enqueue_per_peer_rx(skb, PACKET_STATE_DEAD);
@@ -614,7 +614,7 @@ void wg_packet_receive(struct wg_device *wg, struct sk_buff *skb)
 		PACKET_CB(skb)->ds = ip_tunnel_get_dsfield(ip_hdr(skb), skb);
 		if(wg->inline_en==0)
 		{ wg_packet_consume_data(wg, skb); }
-		else if(wg->inline_en==1)
+		else
 		{
 			wg_packet_consume_data_inline(wg, skb); 
 		}
