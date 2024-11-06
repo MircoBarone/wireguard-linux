@@ -506,11 +506,12 @@ void wg_packet_decrypt_worker(struct work_struct *work)
 	}
 }
 
-static void wg_packet_consume_data_inline(struct wg_device *wg, struct sk_buff *skb)
+static void wg_packet_consume_data(struct wg_device *wg, struct sk_buff *skb)
 {
 	__le32 idx = ((struct message_data *)skb->data)->key_idx;
 	struct wg_peer *peer = NULL;
 	enum packet_state state;
+    int ret;
 
 	rcu_read_lock_bh();
 	PACKET_CB(skb)->keypair =
@@ -522,14 +523,31 @@ static void wg_packet_consume_data_inline(struct wg_device *wg, struct sk_buff *
 
 	if (unlikely(READ_ONCE(peer->is_dead)))
 		goto err;
-    state=likely(decrypt_packet(skb, PACKET_CB(skb)->keypair)) ?
-				PACKET_STATE_CRYPTED : PACKET_STATE_DEAD;
+
+   
 	
-	if (unlikely(!wg_prev_queue_enqueue(&peer->rx_queue, skb)))
-	{   goto err;}
-	rcu_read_unlock_bh();
-	atomic_set_release(&PACKET_CB(skb)->state, state);
-	napi_schedule(&peer->napi);
+	if(wg->inline_en)
+    {
+	 	state=likely(decrypt_packet(skb, PACKET_CB(skb)->keypair)) ?
+				PACKET_STATE_CRYPTED : PACKET_STATE_DEAD;
+		if (unlikely(!wg_prev_queue_enqueue(&peer->rx_queue, skb)))
+			{   goto err;}
+		rcu_read_unlock_bh();
+		atomic_set_release(&PACKET_CB(skb)->state, state);
+		napi_schedule(&peer->napi);
+	}
+
+	else
+	{ 
+		ret = wg_queue_enqueue_per_device_and_peer(&wg->decrypt_cpumask,&wg->decrypt_queue, &peer->rx_queue, skb,
+						   wg->packet_crypt_wq);
+		if (unlikely(ret == -EPIPE))
+			wg_queue_enqueue_per_peer_rx(skb, PACKET_STATE_DEAD);
+		if (likely(!ret || ret == -EPIPE)) {
+		rcu_read_unlock_bh();
+
+	}
+	}
 	
 	return;
 	
@@ -541,38 +559,6 @@ err_keypair:
 	dev_kfree_skb(skb);
 }
 
-static void wg_packet_consume_data(struct wg_device *wg, struct sk_buff *skb)
-{
-	__le32 idx = ((struct message_data *)skb->data)->key_idx;
-	struct wg_peer *peer = NULL;
-	int ret;
-
-	rcu_read_lock_bh();
-	PACKET_CB(skb)->keypair =
-		(struct noise_keypair *)wg_index_hashtable_lookup(
-			wg->index_hashtable, INDEX_HASHTABLE_KEYPAIR, idx,
-			&peer);
-	if (unlikely(!wg_noise_keypair_get(PACKET_CB(skb)->keypair)))
-		goto err_keypair;
-
-	if (unlikely(READ_ONCE(peer->is_dead)))
-		goto err;
-
-	ret = wg_queue_enqueue_per_device_and_peer(&wg->decrypt_cpumask,&wg->decrypt_queue, &peer->rx_queue, skb,
-						   wg->packet_crypt_wq);
-	if (unlikely(ret == -EPIPE))
-		wg_queue_enqueue_per_peer_rx(skb, PACKET_STATE_DEAD);
-	if (likely(!ret || ret == -EPIPE)) {
-		rcu_read_unlock_bh();
-		return;
-	}
-err:
-	wg_noise_keypair_put(PACKET_CB(skb)->keypair, false);
-err_keypair:
-	rcu_read_unlock_bh();
-	wg_peer_put(peer);
-	dev_kfree_skb(skb);
-}
 
 
 
@@ -612,12 +598,10 @@ void wg_packet_receive(struct wg_device *wg, struct sk_buff *skb)
 	}
 	case cpu_to_le32(MESSAGE_DATA):
 		PACKET_CB(skb)->ds = ip_tunnel_get_dsfield(ip_hdr(skb), skb);
-		if(wg->inline_en==0)
-		{ wg_packet_consume_data(wg, skb); }
-		else
-		{
-			wg_packet_consume_data_inline(wg, skb); 
-		}
+		
+		wg_packet_consume_data(wg, skb); 
+		 
+		
 		break;
 	default:
 		WARN(1, "Non-exhaustive parsing of packet header lead to unknown packet type!\n");

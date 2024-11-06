@@ -308,15 +308,21 @@ void wg_packet_encrypt_worker(struct work_struct *work)
 	}
 }
 
-static void wg_packet_create_data_inline(struct wg_peer *peer, struct sk_buff *first)
+static void wg_packet_create_data(struct wg_peer *peer, struct sk_buff *first)
 {
 	struct noise_keypair *keypair;
 	enum packet_state state;
-	
 	struct sk_buff  *skb, *next;
+	struct wg_device *wg = peer->device;
+	int ret = -EINVAL;
+
+
 	rcu_read_lock_bh();
 	if (unlikely(READ_ONCE(peer->is_dead)))
 		goto err;
+
+	if(wg->inline_en==1)
+	{
     keypair = PACKET_CB(first)->keypair;
     skb_list_walk_safe(first, skb, next) {
 		if (likely(encrypt_packet(skb,keypair))) {
@@ -342,34 +348,28 @@ static void wg_packet_create_data_inline(struct wg_peer *peer, struct sk_buff *f
 
     rcu_read_unlock_bh();
 	return;
-err:
-	rcu_read_unlock_bh();
-	wg_noise_keypair_put(PACKET_CB(first)->keypair, false);
-	wg_peer_put(peer);
-	kfree_skb_list(first);
-}
-
-static void wg_packet_create_data(struct wg_peer *peer, struct sk_buff *first)
-{
-	struct wg_device *wg = peer->device;
-	int ret = -EINVAL;
-
-	rcu_read_lock_bh();
-	if (unlikely(READ_ONCE(peer->is_dead)))
-		goto err;
-
-	ret = wg_queue_enqueue_per_device_and_peer(&wg->encrypt_cpumask,&wg->encrypt_queue, &peer->tx_queue, first,
+	}
+	else
+	{
+		ret = wg_queue_enqueue_per_device_and_peer(&wg->encrypt_cpumask,&wg->encrypt_queue, &peer->tx_queue, first,
 						   wg->packet_crypt_wq);
-	if (unlikely(ret == -EPIPE))
+	    if (unlikely(ret == -EPIPE))
 		wg_queue_enqueue_per_peer_tx(first, PACKET_STATE_DEAD);
+
+
+	}
+
+
 err:
 	rcu_read_unlock_bh();
-	if (likely(!ret || ret == -EPIPE))
+	if (wg->inline_en==0 && likely(!ret || ret == -EPIPE))
 		return;
 	wg_noise_keypair_put(PACKET_CB(first)->keypair, false);
 	wg_peer_put(peer);
 	kfree_skb_list(first);
 }
+
+
 
 
 
@@ -429,11 +429,8 @@ void wg_packet_send_staged_packets(struct wg_peer *peer)
 	packets.prev->next = NULL;
 	wg_peer_get(keypair->entry.peer);
 	PACKET_CB(packets.next)->keypair = keypair;
-	struct wg_device *wg = peer->device;
-	if(wg->inline_en==0)
-	{wg_packet_create_data(peer, packets.next);}
-    else 
-	{wg_packet_create_data_inline(peer, packets.next);}
+	wg_packet_create_data(peer, packets.next);
+    
 	return;
 
 out_invalid:
