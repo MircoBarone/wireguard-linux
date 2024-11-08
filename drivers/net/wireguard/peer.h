@@ -15,6 +15,8 @@
 #include <linux/spinlock.h>
 #include <linux/kref.h>
 #include <net/dst_cache.h>
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
 
 struct wg_device;
 
@@ -64,6 +66,7 @@ struct wg_peer {
 	struct list_head allowedips_list;
 	struct napi_struct napi;
 	u64 internal_id;
+	struct kobject  kobj;
 };
 
 struct wg_peer *wg_peer_create(struct wg_device *wg,

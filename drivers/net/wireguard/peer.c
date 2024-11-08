@@ -17,6 +17,58 @@
 
 static struct kmem_cache *peer_cache;
 static atomic64_t peer_counter = ATOMIC64_INIT(0);
+// Define the release function
+static void wg_peer_release(struct kobject *kobj)
+{
+    struct wg_peer *peer = container_of(kobj, struct wg_peer, kobj);
+    // The actual cleanup happens in peer_remove_after_dead
+    // This is just for kobject cleanup
+}
+
+static struct kobj_type wg_peer_ktype = {
+    .sysfs_ops = &kobj_sysfs_ops,
+    .release = wg_peer_release,     
+};
+
+
+
+static ssize_t serial_work_cpu_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) {
+    struct wg_peer *peer = container_of(kobj, struct wg_peer, kobj);
+    return sprintf(buf, "%d\n", peer->serial_work_cpu);
+}
+
+static ssize_t serial_work_cpu_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count) {
+    struct wg_peer *peer = container_of(kobj, struct wg_peer, kobj);
+    int cpu;
+    
+    /* Validate input is a number and convert it */
+    if (sscanf(buf, "%d", &cpu) != 1)
+        return -EINVAL;
+        
+    /* Check CPU is within valid range */
+    if (cpu < 0 || cpu >= num_possible_cpus())
+        return -EINVAL;
+        
+    /* Check if CPU is online */
+    if (!cpu_online(cpu))
+       { return -EINVAL; }
+
+	peer->serial_work_cpu = cpu;
+    return count;
+}
+
+static struct kobj_attribute serial_work_cpu_attribute = __ATTR(serial_work_cpu, 0664, serial_work_cpu_show, serial_work_cpu_store);
+
+static struct attribute *wg_peer_attrs[] = {
+    &serial_work_cpu_attribute.attr,
+    NULL,
+};
+
+static struct attribute_group wg_peer_attr_group = {
+    .attrs = wg_peer_attrs,
+};
+
+
 
 struct wg_peer *wg_peer_create(struct wg_device *wg,
 			       const u8 public_key[NOISE_PUBLIC_KEY_LEN],
@@ -35,6 +87,7 @@ struct wg_peer *wg_peer_create(struct wg_device *wg,
 		return ERR_PTR(ret);
 	if (unlikely(dst_cache_init(&peer->endpoint_cache, GFP_KERNEL)))
 		goto err;
+    kobject_init(&peer->kobj, &wg_peer_ktype);
 
 	peer->device = wg;
 	wg_noise_handshake_init(&peer->handshake, &wg->static_identity,
@@ -61,11 +114,34 @@ struct wg_peer *wg_peer_create(struct wg_device *wg,
 	wg_pubkey_hashtable_add(wg->peer_hashtable, peer);
 	++wg->num_peers;
 	pr_debug("%s: Peer %llu created\n", wg->dev->name, peer->internal_id);
+    
+    
+    // Add it to the system
+   ret = kobject_add(&peer->kobj, &wg->dev->dev.kobj, "peer_%llu", peer->internal_id);
+    if (ret < 0)
+    {    goto err_kobject; }
+        
+    ret = sysfs_create_group(&peer->kobj, &wg_peer_attr_group);
+    if (ret < 0)
+    {    goto err_group; }
+	
+
+
 	return peer;
 
+err_group:
+    kobject_put(&peer->kobj);
+err_kobject:
+    // Clean up everything else
+    napi_disable(&peer->napi);
+    netif_napi_del(&peer->napi);
+    dst_cache_destroy(&peer->endpoint_cache);
+	list_del(&peer->peer_list);
+    --wg->num_peers;
+    kfree(peer);
 err:
-	kmem_cache_free(peer_cache, peer);
-	return ERR_PTR(ret);
+    kmem_cache_free(peer_cache, peer);
+    return ERR_PTR(ret);
 }
 
 struct wg_peer *wg_peer_get_maybe_zero(struct wg_peer *peer)
@@ -146,6 +222,9 @@ static void peer_remove_after_dead(struct wg_peer *peer)
 	 */
 
 	--peer->device->num_peers;
+	sysfs_remove_group(&peer->kobj, &wg_peer_attr_group);
+    kobject_put(&peer->kobj);
+
 	wg_peer_put(peer);
 }
 
